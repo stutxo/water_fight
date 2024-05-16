@@ -15,25 +15,31 @@ fn main() {
     _ = console_log::init_with_level(log::Level::Debug);
     console_error_panic_hook::set_once();
 
-    //player 1 keys
     let secp = secp256k1_zkp::Secp256k1::new();
+
+    //player 1 keys
     //this needs to be a different seed for prod
-    let mut rng_1 = rand_chacha::ChaCha20Rng::from_entropy();
+    // let mut rng_1 = rand_chacha::ChaCha20Rng::from_entropy();
+    let mut rng_1 = rand_chacha::ChaCha20Rng::from_seed([1; 32]);
     let player_1 = secp.generate_keypair(&mut rng_1);
     info!("Player 1 public key: {:?}", player_1.1);
+
     //player 2 keys
     //this needs to be a different seed for prod
-    let mut rng_2 = rand_chacha::ChaCha20Rng::from_entropy();
+    // let mut rng_2 = rand_chacha::ChaCha20Rng::from_entropy();
+    let mut rng_2 = rand_chacha::ChaCha20Rng::from_seed([2; 32]);
     let player_2 = secp.generate_keypair(&mut rng_2);
     info!("Player 2 public key: {:?}", player_2.1);
 
     //player 1 preimage and hash
-    let p1_preimage = rand_chacha::ChaCha20Rng::from_entropy().get_seed();
+    // let p1_preimage = rand_chacha::ChaCha20Rng::from_entropy().get_seed();
+    let p1_preimage = [3; 32];
     let p1_hash = sha256::Hash::hash(&p1_preimage);
     info!("Player 1 preimage: {:?}", p1_preimage);
     info!("Player 1 preimage hash: {:?}", p1_hash);
     //player 2 preimage and hash
-    let p2_preimage = rand_chacha::ChaCha20Rng::from_entropy().get_seed();
+    // let p2_preimage = rand_chacha::ChaCha20Rng::from_entropy().get_seed();
+    let p2_preimage = [4; 32];
     let p2_hash = sha256::Hash::hash(&p2_preimage);
     info!("Player 2 preimage: {:?}", p2_preimage);
     info!("Player 2 preimage hash: {:?}", p2_hash);
@@ -43,6 +49,8 @@ fn main() {
         .expect("Failed to combine keys");
 
     let combined_hash = sha256::Hash::hash(&[p1_hash, p2_hash].concat());
+
+    info!("Combined hash: {:?}", combined_hash);
 
     let script = battle_script(combined_hash.serialize(), player_1.1, player_2.1);
 
@@ -62,7 +70,6 @@ fn main() {
 
     info!("Address: {:?}", address);
 
-    // let script_test = format!("script used: {:?}", taproot_spend_info.as_script_map());
     let address_text = format!("game deposit address: {}", address);
 
     mount_to_body(|| view! { <p> {address_text} </p>});

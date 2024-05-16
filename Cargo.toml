@@ -10,6 +10,7 @@ log = "0.4"
 console_error_panic_hook = "0.1.7"
 elements = "0.24.1"
 rand_chacha = "0.3.1"
+# web-sys = { version = "0.3.67", features = ['Window', 'Storage'] }
 
 [profile.release]
 lto = true
