@@ -143,15 +143,14 @@ fn main() {
         .script_witness
         .push(control_block.serialize());
 
-    let tx = unsigned_tx.clone();
-    info!("Unsigned Transaction: {:?}", tx);
+    info!("Unsigned Transaction: {:?}", unsigned_tx);
 
     let serialized_tx = serialize_hex(&unsigned_tx);
     info!("Hex Encoded Transaction: {}", serialized_tx);
 
     let address_text = format!("game deposit address: {}", address);
     let txid_text = format!("Withdraw TXID: {}", serialized_tx);
-    mount_to_body(|| view! { <p> {address_text} </p><p> {txid_text} </p>});
+    mount_to_body(|| view! { <p> {address_text} </p><p> {txid_text} </p> });
 }
 
 fn battle_script(combined_hash: Vec<u8>) -> elements::Script {
