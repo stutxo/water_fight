@@ -160,4 +160,6 @@ fn battle_script(combined_hash: Vec<u8>) -> elements::Script {
         .push_slice(&combined_hash)
         .push_opcode(OP_EQUAL)
         .into_script()
+
+    //todo: add hashlock stuff so only the two players are able to spend if they win and timelock for if the game timesout
 }
