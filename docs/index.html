@@ -8,8 +8,8 @@
     <title>start_template</title>
     
 <script type="module">
-import init, * as bindings from '/leptos_start_template-3f095b087cb76818.js';
-const wasm = await init('/leptos_start_template-3f095b087cb76818_bg.wasm');
+import init, * as bindings from '/leptos_start_template-afef60b02cb3a126.js';
+const wasm = await init('/leptos_start_template-afef60b02cb3a126_bg.wasm');
 
 
 window.wasmBindings = bindings;
@@ -31,13 +31,14 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
         body>button,
         p,
         h6,
-        input,
-        iframe {
+        input {
             display: block;
             margin-left: auto;
             margin-right: auto;
             text-align: center;
             margin-top: var(--size-2);
+            word-wrap: break-word;
+            overflow-wrap: break-word;
         }
 
         .EmbedFrame {
@@ -45,8 +46,8 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
         }
     </style>
 
-<link rel="modulepreload" href="/leptos_start_template-3f095b087cb76818.js" crossorigin=anonymous integrity="sha384-70GAmDR4IIQEL4SV6DMWyBCO2tmdXTCpmZa4xFOF+NGXfjG6Kk8fRve6LqdIsihW">
-<link rel="preload" href="/leptos_start_template-3f095b087cb76818_bg.wasm" crossorigin=anonymous integrity="sha384-635R6WPHLfi64wWaK/+pjNdy+wj7GYuQafU+0yOoENhTq6OWbNP6ITtBwbY6Sbl/" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/leptos_start_template-afef60b02cb3a126.js" crossorigin=anonymous integrity="sha384-jKrMuBjy0PF4v/lBO9FcdrchFX2rO74EGU0iNvY9ADAt4h60E+Q6XhJ6GJAIdhik">
+<link rel="preload" href="/leptos_start_template-afef60b02cb3a126_bg.wasm" crossorigin=anonymous integrity="sha384-V4D43ede0Wm0V3rWudC5SeK+kAyvyjvojNRllQ/7R1nDHoofbbqMoJCZdUrUPoVx" as="fetch" type="application/wasm"></head>
 
 <body><script>"use strict";
 
