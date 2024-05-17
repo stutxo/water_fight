@@ -166,18 +166,6 @@ fn main() {
 
         info!("Found Transactions: {:?}", prev_tx);
 
-        let mut binding = Vec::new();
-
-        for tx in prev_tx.iter() {
-            for output in &tx.output {
-                binding.push(output.clone());
-            }
-        }
-
-        let prevouts = Prevouts::All(&binding);
-
-        info!("Prevouts: {:?}", prevouts);
-
         let asset_id = AssetId::from_str(&utxos[0].asset).unwrap();
 
         let total_amount = utxos.iter().map(|utxo| utxo.value).sum::<u64>();
@@ -203,7 +191,17 @@ fn main() {
             .control_block(&(script.clone(), LeafVersion::default()))
             .unwrap();
 
-        for input in unsigned_tx.input.iter_mut() {
+        for (index, input) in unsigned_tx.input.iter_mut().enumerate() {
+            let mut binding = Vec::new();
+
+            prev_tx[index].output.iter().for_each(|output| {
+                binding.push(output.clone());
+            });
+
+            let prevouts = Prevouts::All(&binding);
+
+            info!("Prevouts: {:?}", prevouts);
+
             input
                 .witness
                 .script_witness
