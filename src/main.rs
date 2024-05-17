@@ -1,27 +1,25 @@
-use elements::bitcoin::{secp256k1, transaction, TapSighashType, Witness};
 use elements::encode::deserialize;
 use elements::hex::{FromHex, ToHex};
-use elements::schnorr::{TapTweak, TweakedKeypair};
-use elements::sighash::{Prevouts, SighashCache};
-use elements::{address, bitcoin, BlockHash, Script};
-use leptos::ev::message;
+
+use elements::opcodes::all::{OP_CHECKSIG, OP_CHECKSIGADD, OP_CHECKSIGVERIFY};
+use elements::secp256k1_zkp::{Message, SecretKey};
+use elements::sighash::{Prevouts, ScriptPath, SighashCache};
+use elements::{BlockHash, SchnorrSig, SchnorrSighashType, Sequence};
+
 use reqwasm::http::Request;
 use serde::{Deserialize, Serialize};
 use std::{str::FromStr, vec};
 
-use elements::opcodes::all::{OP_CHECKSIGADD, OP_EQUAL, OP_NUMEQUAL, OP_NUMEQUALVERIFY};
-use elements::secp256k1_zkp::{rand, Message, SecretKey};
 use elements::{
     confidential::{Asset, Value},
     encode::serialize_hex,
     hashes::{sha256, Hash},
-    opcodes::all::{OP_CAT, OP_SHA256},
     pset::serialize::Serialize as PsetSerialize,
     schnorr::Keypair,
     script::Builder,
     secp256k1_zkp::{self},
     taproot::{LeafVersion, TaprootBuilder, TaprootSpendInfo},
-    Address, AddressParams, AssetId, LockTime, OutPoint, Sequence, Transaction, TxIn, TxOut, Txid,
+    Address, AddressParams, AssetId, LockTime, OutPoint, Transaction, TxIn, TxOut,
 };
 use leptos::{mount_to_body, spawn_local, view};
 use log::info;
@@ -50,7 +48,7 @@ fn main() {
     let secp = secp256k1_zkp::Secp256k1::new();
 
     let p1_secret =
-        SecretKey::from_str("0eae283124be737cfef1a2f224e252fe501614987fdc7d8afda607011bd7f969")
+        SecretKey::from_str("0eae283124be737cfef1a2f224e252fe501614987fdc7d8afda607011bd7f939")
             .unwrap();
     let p2_secret =
         SecretKey::from_str("8302235fe68dccbeb724807416598359ffca97766684cc3fd3bd1b7d513cc0be")
@@ -99,8 +97,9 @@ fn main() {
     info!("Address: {:?}", address);
 
     //pick a random player to win
-    let winner = if rand::random() { player_1 } else { player_2 };
-    info!("Winner: {:?}", winner.public_key().serialize().to_hex());
+    // let winner = if rand::random() { player_1 } else { player_2 };
+    let winner = player_1;
+    info!("Winner: {:?}", winner.x_only_public_key().0.to_hex());
 
     let winners_address = Address::p2tr(
         &secp,
@@ -129,6 +128,7 @@ fn main() {
         let utxos: Vec<Utxo> = serde_json::from_str(&res_utxo).expect("Failed to parse JSON");
 
         if utxos.is_empty() {
+            info!("No UTXOs found, pls fund address");
             return;
         }
 
@@ -143,7 +143,31 @@ fn main() {
             })
             .collect();
 
-        info!("Found UTXOs: {:?}", inputs);
+        info!("Found UTXOs: {:?}. {:?}", inputs.len(), inputs);
+
+        let mut prev_tx = Vec::new();
+
+        for input in inputs.clone() {
+            info!(
+                "Fetching previous tx: {:?}, {:?}",
+                input.previous_output.txid, input.previous_output.vout
+            );
+            let url = format!(
+                "https://liquid.network/liquidtestnet/api/tx/{}/hex",
+                input.previous_output.txid
+            );
+            let response = Request::get(&url)
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+
+            let tx: Transaction = deserialize(&Vec::<u8>::from_hex(&response).unwrap()).unwrap();
+
+            prev_tx.push(tx);
+        }
 
         let asset_id = AssetId::from_str(&utxos[0].asset).unwrap();
 
@@ -166,60 +190,62 @@ fn main() {
             output: vec![spend, fee],
         };
 
+        let unsigned_tx_clone = unsigned_tx.clone();
+
         let control_block = taproot_spend_info
             .control_block(&(script.clone(), LeafVersion::default()))
             .unwrap();
 
-        for (_index, input) in unsigned_tx.input.iter_mut().enumerate() {
-            let url = format!(
-                "https://liquid.network/liquidtestnet/api/tx/{}/hex",
-                input.previous_output.txid
-            );
-            let response = Request::get(&url)
-                .send()
-                .await
-                .unwrap()
-                .text()
-                .await
+        let res = control_block.verify_taproot_commitment(
+            &secp,
+            &taproot_spend_info.output_key(),
+            &script,
+        );
+        info!("is taproot committed? {} ", res);
+
+        let mut bindings = vec![];
+
+        for prev_tx in prev_tx.iter() {
+            bindings.push(prev_tx.output[0].clone());
+        }
+
+        let prevouts = Prevouts::All(&bindings);
+
+        info!("Prevouts1: {:?}", prevouts);
+
+        for (index, input) in unsigned_tx.input.iter_mut().enumerate() {
+            let sighash_sig = SighashCache::new(&unsigned_tx_clone)
+                .taproot_script_spend_signature_hash(
+                    index,
+                    &prevouts,
+                    ScriptPath::with_defaults(&script),
+                    SchnorrSighashType::Default,
+                    BlockHash::all_zeros(),
+                )
+                .expect("failed to construct sighash");
+
+            info!("Sighash Signature: {:?}", sighash_sig);
+
+            let msg = Message::from_digest_slice(sighash_sig.as_ref()).unwrap();
+            let signature = secp.sign_schnorr(&msg, &winner);
+
+            secp.verify_schnorr(&signature, &msg, &winner.x_only_public_key().0)
                 .unwrap();
 
-            let tx: Transaction = deserialize(&Vec::<u8>::from_hex(&response).unwrap()).unwrap();
+            let schnorr_sig = SchnorrSig {
+                sig: signature,
+                hash_ty: SchnorrSighashType::Default,
+            };
 
-            let binding = vec![tx.output[input.previous_output.vout as usize].clone()];
+            info!("Schnorr Signature: {:?}", schnorr_sig);
+            info!("Schnorr Signature VEC: {:?}", schnorr_sig.to_vec());
 
-            let prevouts = Prevouts::All(&binding);
-
-            info!("Prevouts: {:?}", binding.len());
-
-            input
-                .witness
-                .script_witness
-                .push(p1_hash.serialize().to_vec());
-            input
-                .witness
-                .script_witness
-                .push(p2_hash.serialize().to_vec());
-
+            input.witness.script_witness.push(schnorr_sig.to_vec());
             input.witness.script_witness.push(script.to_bytes());
             input.witness.script_witness.push(control_block.serialize());
-
-            // let mut sighasher = SighashCache::new(&mut unsigned_tx);
-            // let sighash = sighasher
-            //     .taproot_script_spend_signature_hash(
-            //         input_index,
-            //         &prevouts,
-
-            //         TapSighashType::Default,
-            //         BlockHash::all_zeros(),
-            //     )
-            //     .expect("failed to construct sighash");
-
-            // // Sign the sighash using the secp256k1 library (exported by rust-bitcoin).
-            // let tweaked: TweakedKeypair = winner.tap_tweak(&secp, None);
-            // let msg = secp256k1::Message::from_digest_slice(sighash.as_ref()).expect("should be cryptographically secure hash")
-            // let signature = secp.sign_schnorr(&msg, &tweaked.to_inner());
-            // input.witness.script_witness.push(signature.serialize().to_vec());
         }
+
+        info!("script used: {:?}", script);
 
         info!("Unsigned Transaction: {:?}", unsigned_tx);
 
@@ -244,16 +270,20 @@ fn main() {
 }
 
 fn battle_script(combined_hash: Vec<u8>, keypair1: Keypair, keypair2: Keypair) -> elements::Script {
+    // Builder::new()
+    //     .push_key(&keypair1.public_key().into())
+    //     .push_opcode(OP_CHECKSIGADD)
+    //     .push_key(&keypair2.public_key().into())
+    //     .push_opcode(OP_CHECKSIGADD)
+    //     .push_int(1)
+    //     .push_opcode(OP_NUMEQUALVERIFY)
+    //     .push_opcode(OP_CAT)
+    //     .push_opcode(OP_SHA256)
+    //     .push_slice(&combined_hash)
+    //     .push_opcode(OP_EQUAL)
+    //     .into_script()
     Builder::new()
-        .push_key(&keypair1.public_key().into())
-        .push_opcode(OP_CHECKSIGADD)
-        .push_key(&keypair2.public_key().into())
-        .push_opcode(OP_CHECKSIGADD)
-        .push_int(1)
-        .push_opcode(OP_NUMEQUALVERIFY)
-        .push_opcode(OP_CAT)
-        .push_opcode(OP_SHA256)
-        .push_slice(&combined_hash)
-        .push_opcode(OP_EQUAL)
+        .push_slice(&keypair1.x_only_public_key().0.serialize())
+        .push_opcode(OP_CHECKSIG)
         .into_script()
 }

@@ -17,7 +17,9 @@ function addHeapObject(obj) {
     return idx;
 }
 
-let WASM_VECTOR_LEN = 0;
+const cachedTextDecoder = (typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8', { ignoreBOM: true, fatal: true }) : { decode: () => { throw Error('TextDecoder not available') } } );
+
+if (typeof TextDecoder !== 'undefined') { cachedTextDecoder.decode(); };
 
 let cachedUint8Memory0 = null;
 
@@ -27,6 +29,13 @@ function getUint8Memory0() {
     }
     return cachedUint8Memory0;
 }
+
+function getStringFromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return cachedTextDecoder.decode(getUint8Memory0().subarray(ptr, ptr + len));
+}
+
+let WASM_VECTOR_LEN = 0;
 
 const cachedTextEncoder = (typeof TextEncoder !== 'undefined' ? new TextEncoder('utf-8') : { encode: () => { throw Error('TextEncoder not available') } } );
 
@@ -105,15 +114,6 @@ function takeObject(idx) {
     const ret = getObject(idx);
     dropObject(idx);
     return ret;
-}
-
-const cachedTextDecoder = (typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8', { ignoreBOM: true, fatal: true }) : { decode: () => { throw Error('TextDecoder not available') } } );
-
-if (typeof TextDecoder !== 'undefined') { cachedTextDecoder.decode(); };
-
-function getStringFromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return cachedTextDecoder.decode(getUint8Memory0().subarray(ptr, ptr + len));
 }
 
 function debugString(val) {
@@ -430,6 +430,14 @@ imports.wbg.__wbg_stack_658279fe44541cf6 = function(arg0, arg1) {
     getInt32Memory0()[arg0 / 4 + 1] = len1;
     getInt32Memory0()[arg0 / 4 + 0] = ptr1;
 };
+imports.wbg.__wbindgen_string_new = function(arg0, arg1) {
+    const ret = getStringFromWasm0(arg0, arg1);
+    return addHeapObject(ret);
+};
+imports.wbg.__wbindgen_is_undefined = function(arg0) {
+    const ret = getObject(arg0) === undefined;
+    return ret;
+};
 imports.wbg.__wbindgen_string_get = function(arg0, arg1) {
     const obj = getObject(arg1);
     const ret = typeof(obj) === 'string' ? obj : undefined;
@@ -447,13 +455,16 @@ imports.wbg.__wbindgen_cb_drop = function(arg0) {
     const ret = false;
     return ret;
 };
-imports.wbg.__wbindgen_string_new = function(arg0, arg1) {
-    const ret = getStringFromWasm0(arg0, arg1);
-    return addHeapObject(ret);
-};
-imports.wbg.__wbindgen_is_undefined = function(arg0) {
-    const ret = getObject(arg0) === undefined;
+imports.wbg.__wbindgen_is_function = function(arg0) {
+    const ret = typeof(getObject(arg0)) === 'function';
     return ret;
+};
+imports.wbg.__wbg_queueMicrotask_481971b0d87f3dd4 = function(arg0) {
+    queueMicrotask(getObject(arg0));
+};
+imports.wbg.__wbg_queueMicrotask_3cbae2ec6b6cd3d6 = function(arg0) {
+    const ret = getObject(arg0).queueMicrotask;
+    return addHeapObject(ret);
 };
 imports.wbg.__wbg_instanceof_Window_f401953a2cf86220 = function(arg0) {
     let result;
@@ -581,17 +592,6 @@ imports.wbg.__wbg_cloneNode_e19c313ea20d5d1d = function() { return handleError(f
 imports.wbg.__wbg_length_d0a802565d17eec4 = function(arg0) {
     const ret = getObject(arg0).length;
     return ret;
-};
-imports.wbg.__wbindgen_is_function = function(arg0) {
-    const ret = typeof(getObject(arg0)) === 'function';
-    return ret;
-};
-imports.wbg.__wbg_queueMicrotask_481971b0d87f3dd4 = function(arg0) {
-    queueMicrotask(getObject(arg0));
-};
-imports.wbg.__wbg_queueMicrotask_3cbae2ec6b6cd3d6 = function(arg0) {
-    const ret = getObject(arg0).queueMicrotask;
-    return addHeapObject(ret);
 };
 imports.wbg.__wbindgen_is_object = function(arg0) {
     const val = getObject(arg0);
@@ -786,8 +786,8 @@ imports.wbg.__wbindgen_memory = function() {
     const ret = wasm.memory;
     return addHeapObject(ret);
 };
-imports.wbg.__wbindgen_closure_wrapper6547 = function(arg0, arg1, arg2) {
-    const ret = makeMutClosure(arg0, arg1, 348, __wbg_adapter_26);
+imports.wbg.__wbindgen_closure_wrapper3418 = function(arg0, arg1, arg2) {
+    const ret = makeMutClosure(arg0, arg1, 408, __wbg_adapter_26);
     return addHeapObject(ret);
 };
 
@@ -828,7 +828,7 @@ async function __wbg_init(input) {
     if (wasm !== undefined) return wasm;
 
     if (typeof input === 'undefined') {
-        input = new URL('leptos_start_template_bg.wasm', import.meta.url);
+        input = new URL('wtr_fght_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 
