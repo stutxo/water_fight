@@ -145,27 +145,6 @@ fn main() {
 
         info!("Found UTXOs: {:?}", inputs);
 
-        let mut prev_tx = Vec::new();
-
-        for input in inputs.clone() {
-            let url = format!(
-                "https://liquid.network/liquidtestnet/api/tx/{}/hex",
-                input.previous_output.txid
-            );
-            let response = Request::get(&url)
-                .send()
-                .await
-                .unwrap()
-                .text()
-                .await
-                .unwrap();
-
-            let tx: Transaction = deserialize(&Vec::<u8>::from_hex(&response).unwrap()).unwrap();
-            prev_tx.push(tx);
-        }
-
-        info!("Found Transactions: {:?}", prev_tx);
-
         let asset_id = AssetId::from_str(&utxos[0].asset).unwrap();
 
         let total_amount = utxos.iter().map(|utxo| utxo.value).sum::<u64>();
@@ -191,16 +170,26 @@ fn main() {
             .control_block(&(script.clone(), LeafVersion::default()))
             .unwrap();
 
-        for (index, input) in unsigned_tx.input.iter_mut().enumerate() {
-            let mut binding = Vec::new();
+        for (_index, input) in unsigned_tx.input.iter_mut().enumerate() {
+            let url = format!(
+                "https://liquid.network/liquidtestnet/api/tx/{}/hex",
+                input.previous_output.txid
+            );
+            let response = Request::get(&url)
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
 
-            prev_tx[index].output.iter().for_each(|output| {
-                binding.push(output.clone());
-            });
+            let tx: Transaction = deserialize(&Vec::<u8>::from_hex(&response).unwrap()).unwrap();
+
+            let binding = vec![tx.output[input.previous_output.vout as usize].clone()];
 
             let prevouts = Prevouts::All(&binding);
 
-            info!("Prevouts: {:?}", prevouts);
+            info!("Prevouts: {:?}", binding.len());
 
             input
                 .witness
