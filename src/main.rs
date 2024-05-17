@@ -1,23 +1,40 @@
 use elements::hex::ToHex;
+use serde::{Deserialize, Serialize};
 use std::{str::FromStr, vec};
 
 use elements::opcodes::all::OP_EQUAL;
-use elements::secp256k1_zkp::SecretKey;
+use elements::secp256k1_zkp::{rand, SecretKey};
 use elements::{
     confidential::{Asset, Value},
     encode::serialize_hex,
     hashes::{sha256, Hash},
     opcodes::all::{OP_CAT, OP_SHA256},
-    pset::serialize::Serialize,
+    pset::serialize::Serialize as PsetSerialize,
     schnorr::Keypair,
     script::Builder,
-    secp256k1_zkp::{self, rand::Rng},
+    secp256k1_zkp::{self},
     taproot::{LeafVersion, TaprootBuilder, TaprootSpendInfo},
     Address, AddressParams, AssetId, LockTime, OutPoint, Sequence, Transaction, TxIn, TxOut, Txid,
 };
-use leptos::{mount_to_body, view};
+use leptos::{mount_to_body, spawn_local, view};
 use log::info;
-use rand_chacha::rand_core::SeedableRng;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Utxo {
+    txid: String,
+    vout: u32,
+    status: UtxoStatus,
+    value: u64,
+    asset: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct UtxoStatus {
+    confirmed: bool,
+    block_height: u64,
+    block_hash: String,
+    block_time: u64,
+}
 
 fn main() {
     _ = console_log::init_with_level(log::Level::Debug);
@@ -74,11 +91,7 @@ fn main() {
     info!("Address: {:?}", address);
 
     //pick a random player to win
-    let winner = if rand_chacha::ChaCha20Rng::from_entropy().gen_bool(0.5) {
-        player_1
-    } else {
-        player_2
-    };
+    let winner = if rand::random() { player_1 } else { player_2 };
     info!("Winner: {:?}", winner.public_key().serialize().to_hex());
 
     let winners_address = Address::p2tr(
@@ -90,67 +103,92 @@ fn main() {
     );
 
     //create spend transaction for winner to claim funds
+    let address_clone = address.clone();
+    spawn_local(async move {
+        let res = reqwasm::http::Request::get(&format!(
+            "https://liquid.network/liquidtestnet/api/address/{}/utxo",
+            address_clone
+        ))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
 
-    let txid_1 = "6470a3d43cc56f2f85290340abe5abc1536e8f225bc51a2aa02e138659c83ae6";
-    let txid_1 = Txid::from_str(txid_1).unwrap();
+        let utxos: Vec<Utxo> = serde_json::from_str(&res).expect("Failed to parse JSON");
+        info!("Parsed UTXOs: {:?}", utxos);
 
-    let input_1 = TxIn {
-        previous_output: OutPoint::new(txid_1, 0),
-        sequence: Sequence::default(),
-        ..Default::default()
-    };
+        let inputs: Vec<TxIn> = utxos
+            .iter()
+            .map(|utxo| TxIn {
+                previous_output: OutPoint::new(
+                    elements::Txid::from_str(&utxo.txid).expect("Invalid txid format"),
+                    utxo.vout,
+                ),
+                sequence: Sequence::default(),
+                ..Default::default()
+            })
+            .collect();
 
-    let asset_id =
-        AssetId::from_str("144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49")
+        let asset_id = AssetId::from_str(&utxos[0].asset).unwrap();
+        let total_amount = utxos.iter().map(|utxo| utxo.value).sum::<u64>();
+        let fee = 1000;
+
+        let spend = TxOut {
+            value: Value::Explicit(total_amount - fee),
+            script_pubkey: winners_address.script_pubkey(),
+            asset: Asset::Explicit(asset_id),
+            ..Default::default()
+        };
+
+        let fee = TxOut::new_fee(fee, asset_id);
+
+        let mut unsigned_tx = Transaction {
+            version: 2,
+            lock_time: LockTime::ZERO,
+            input: inputs,
+            output: vec![spend, fee],
+        };
+
+        for input in unsigned_tx.input.iter_mut() {
+            input
+                .witness
+                .script_witness
+                .push(p1_hash.serialize().to_vec());
+            input
+                .witness
+                .script_witness
+                .push(p2_hash.serialize().to_vec());
+            input.witness.script_witness.push(script.to_bytes());
+
+            let control_block = taproot_spend_info
+                .control_block(&(script.clone(), LeafVersion::default()))
+                .unwrap();
+            input.witness.script_witness.push(control_block.serialize());
+        }
+
+        info!("Unsigned Transaction: {:?}", unsigned_tx);
+
+        let serialized_tx = serialize_hex(&unsigned_tx);
+        info!("Hex Encoded Transaction: {}", serialized_tx);
+
+        let address_text = format!("game deposit address: {}", address);
+        let txid_text = format!("Withdraw TXID: {}", serialized_tx);
+
+        let res = reqwasm::http::Request::post("https://liquid.network/liquidtestnet/api/tx")
+            .body(serialized_tx)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
             .unwrap();
 
-    let fee = 100;
+        info!("TXID: {:?}", res);
 
-    let spend = TxOut {
-        value: Value::Explicit(100000 - fee),
-        script_pubkey: winners_address.script_pubkey(),
-        asset: Asset::Explicit(asset_id),
-        ..Default::default()
-    };
-
-    let fee = TxOut::new_fee(fee, asset_id);
-
-    let mut unsigned_tx = Transaction {
-        version: 2,
-        lock_time: LockTime::ZERO,
-        input: vec![input_1],
-        output: vec![spend, fee],
-    };
-
-    unsigned_tx.input[0]
-        .witness
-        .script_witness
-        .push(p1_hash.serialize().to_vec());
-    unsigned_tx.input[0]
-        .witness
-        .script_witness
-        .push(p2_hash.serialize().to_vec());
-    unsigned_tx.input[0]
-        .witness
-        .script_witness
-        .push(script.to_bytes());
-
-    let control_block = taproot_spend_info
-        .control_block(&(script.clone(), LeafVersion::default()))
-        .unwrap();
-    unsigned_tx.input[0]
-        .witness
-        .script_witness
-        .push(control_block.serialize());
-
-    info!("Unsigned Transaction: {:?}", unsigned_tx);
-
-    let serialized_tx = serialize_hex(&unsigned_tx);
-    info!("Hex Encoded Transaction: {}", serialized_tx);
-
-    let address_text = format!("game deposit address: {}", address);
-    let txid_text = format!("Withdraw TXID: {}", serialized_tx);
-    mount_to_body(|| view! { <p> {address_text} </p><p> {txid_text} </p> });
+        mount_to_body(|| view! { <p> {address_text} </p><p> {txid_text} </p> });
+    });
 }
 
 fn battle_script(combined_hash: Vec<u8>) -> elements::Script {
