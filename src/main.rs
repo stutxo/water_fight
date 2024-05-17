@@ -1,9 +1,11 @@
 use elements::encode::deserialize;
 use elements::hex::{FromHex, ToHex};
 
-use elements::opcodes::all::{OP_CHECKSIG, OP_CHECKSIGADD, OP_CHECKSIGVERIFY};
+use elements::opcodes::all::OP_CHECKSIG;
+use elements::schnorr::XOnlyPublicKey;
 use elements::secp256k1_zkp::{Message, SecretKey};
-use elements::sighash::{Prevouts, ScriptPath, SighashCache};
+use elements::sighash::{self, Prevouts, ScriptPath, SighashCache};
+use elements::taproot::TapLeafHash;
 use elements::{BlockHash, SchnorrSig, SchnorrSighashType, Sequence};
 
 use reqwasm::http::Request;
@@ -166,7 +168,17 @@ fn main() {
 
             let tx: Transaction = deserialize(&Vec::<u8>::from_hex(&response).unwrap()).unwrap();
 
-            prev_tx.push(tx);
+            let mut outpoint: Option<OutPoint> = None;
+            for (i, out) in tx.output.iter().enumerate() {
+                if address.script_pubkey() == out.script_pubkey {
+                    outpoint = Some(OutPoint::new(tx.txid(), i as u32));
+                    break;
+                }
+            }
+
+            let prevout = outpoint.expect("Outpoint must exist in tx");
+
+            prev_tx.push(tx.output[prevout.vout as usize].clone());
         }
 
         let asset_id = AssetId::from_str(&utxos[0].asset).unwrap();
@@ -192,60 +204,45 @@ fn main() {
 
         let unsigned_tx_clone = unsigned_tx.clone();
 
-        let control_block = taproot_spend_info
-            .control_block(&(script.clone(), LeafVersion::default()))
-            .unwrap();
-
-        let res = control_block.verify_taproot_commitment(
-            &secp,
-            &taproot_spend_info.output_key(),
-            &script,
-        );
-        info!("is taproot committed? {} ", res);
-
-        let mut bindings = vec![];
-
-        for prev_tx in prev_tx.iter() {
-            bindings.push(prev_tx.output[0].clone());
-        }
-
-        let prevouts = Prevouts::All(&bindings);
-
-        info!("Prevouts1: {:?}", prevouts);
-
+        let script_clone = script.clone();
         for (index, input) in unsigned_tx.input.iter_mut().enumerate() {
             let sighash_sig = SighashCache::new(&unsigned_tx_clone)
                 .taproot_script_spend_signature_hash(
                     index,
-                    &prevouts,
-                    ScriptPath::with_defaults(&script),
-                    SchnorrSighashType::Default,
-                    BlockHash::all_zeros(),
+                    &Prevouts::All(&prev_tx),
+                    TapLeafHash::from(sighash::ScriptPath::with_defaults(&script_clone)),
+                    SchnorrSighashType::All,
+                    BlockHash::from_str(
+                        "a771da8e52ee6ad581ed1e9a99825e5b3b7992225534eaa2ae23244fe26ab1c1",
+                    )
+                    .unwrap(),
                 )
                 .expect("failed to construct sighash");
 
             info!("Sighash Signature: {:?}", sighash_sig);
 
-            let msg = Message::from_digest_slice(sighash_sig.as_ref()).unwrap();
-            let signature = secp.sign_schnorr(&msg, &winner);
+            let sig = secp.sign_schnorr(
+                &secp256k1_zkp::Message::from_digest_slice(&sighash_sig[..]).unwrap(),
+                &winner,
+            );
 
-            secp.verify_schnorr(&signature, &msg, &winner.x_only_public_key().0)
-                .unwrap();
+            let script_ver = (script.clone(), LeafVersion::default());
+            let ctrl_block = taproot_spend_info.control_block(&script_ver).unwrap();
 
             let schnorr_sig = SchnorrSig {
-                sig: signature,
-                hash_ty: SchnorrSighashType::Default,
+                sig,
+                hash_ty: SchnorrSighashType::All,
             };
 
             info!("Schnorr Signature: {:?}", schnorr_sig);
             info!("Schnorr Signature VEC: {:?}", schnorr_sig.to_vec());
 
-            input.witness.script_witness.push(schnorr_sig.to_vec());
-            input.witness.script_witness.push(script.to_bytes());
-            input.witness.script_witness.push(control_block.serialize());
+            input.witness.script_witness = vec![
+                schnorr_sig.to_vec(),
+                script_ver.0.into_bytes(),
+                ctrl_block.serialize(),
+            ];
         }
-
-        info!("script used: {:?}", script);
 
         info!("Unsigned Transaction: {:?}", unsigned_tx);
 
@@ -282,8 +279,9 @@ fn battle_script(combined_hash: Vec<u8>, keypair1: Keypair, keypair2: Keypair) -
     //     .push_slice(&combined_hash)
     //     .push_opcode(OP_EQUAL)
     //     .into_script()
+    let (pk, _): (XOnlyPublicKey, secp256k1_zkp::Parity) = XOnlyPublicKey::from_keypair(&keypair1);
     Builder::new()
-        .push_slice(&keypair1.x_only_public_key().0.serialize())
+        .push_slice(&pk.serialize())
         .push_opcode(OP_CHECKSIG)
         .into_script()
 }
