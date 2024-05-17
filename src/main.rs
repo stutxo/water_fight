@@ -1,12 +1,12 @@
 use elements::encode::deserialize;
 use elements::hex::{FromHex, ToHex};
 
-use elements::opcodes::all::OP_CHECKSIG;
-use elements::schnorr::XOnlyPublicKey;
-use elements::secp256k1_zkp::{Message, SecretKey};
-use elements::sighash::{self, Prevouts, ScriptPath, SighashCache};
+use elements::opcodes::all::{OP_CAT, OP_CHECKSIGVERIFY, OP_EQUAL, OP_EQUALVERIFY, OP_SHA256};
+
+use elements::secp256k1_zkp::{rand, SecretKey};
+use elements::sighash::{self, Prevouts, SighashCache};
 use elements::taproot::TapLeafHash;
-use elements::{BlockHash, SchnorrSig, SchnorrSighashType, Sequence};
+use elements::{BlockHash, SchnorrSig, SchnorrSighashType};
 
 use reqwasm::http::Request;
 use serde::{Deserialize, Serialize};
@@ -80,10 +80,13 @@ fn main() {
         secp256k1_zkp::PublicKey::combine_keys(&[&player_1.public_key(), &player_2.public_key()])
             .expect("Failed to combine keys");
 
-    let script = battle_script(combined_hash.serialize(), player_1, player_2);
+    let script_leaf_1 = battle_script(combined_hash.serialize(), player_1);
+    let script_leaf_2 = battle_script(combined_hash.serialize(), player_2);
 
     let taproot_spend_info: TaprootSpendInfo = TaprootBuilder::new()
-        .add_leaf(0, script.clone())
+        .add_leaf(1, script_leaf_1.clone())
+        .unwrap()
+        .add_leaf(1, script_leaf_2.clone())
         .unwrap()
         .finalize(&secp, combined_pubkey.into())
         .unwrap();
@@ -99,9 +102,7 @@ fn main() {
     info!("Address: {:?}", address);
 
     //pick a random player to win
-    // let winner = if rand::random() { player_1 } else { player_2 };
-    let winner = player_1;
-    info!("Winner: {:?}", winner.x_only_public_key().0.to_hex());
+    let winner = if rand::random() { player_1 } else { player_2 };
 
     let winners_address = Address::p2tr(
         &secp,
@@ -204,13 +205,20 @@ fn main() {
 
         let unsigned_tx_clone = unsigned_tx.clone();
 
-        let script_clone = script.clone();
+        let script = if winner == player_1 {
+            info!("Player 1 wins");
+            script_leaf_1.clone()
+        } else {
+            info!("Player 2 wins");
+            script_leaf_2.clone()
+        };
+
         for (index, input) in unsigned_tx.input.iter_mut().enumerate() {
             let sighash_sig = SighashCache::new(&unsigned_tx_clone)
                 .taproot_script_spend_signature_hash(
                     index,
                     &Prevouts::All(&prev_tx),
-                    TapLeafHash::from(sighash::ScriptPath::with_defaults(&script_clone)),
+                    TapLeafHash::from(sighash::ScriptPath::with_defaults(&script)),
                     SchnorrSighashType::All,
                     BlockHash::from_str(
                         "a771da8e52ee6ad581ed1e9a99825e5b3b7992225534eaa2ae23244fe26ab1c1",
@@ -238,6 +246,8 @@ fn main() {
             info!("Schnorr Signature VEC: {:?}", schnorr_sig.to_vec());
 
             input.witness.script_witness = vec![
+                p1_hash.serialize().to_vec(),
+                p2_hash.serialize().to_vec(),
                 schnorr_sig.to_vec(),
                 script_ver.0.into_bytes(),
                 ctrl_block.serialize(),
@@ -266,22 +276,13 @@ fn main() {
     });
 }
 
-fn battle_script(combined_hash: Vec<u8>, keypair1: Keypair, keypair2: Keypair) -> elements::Script {
-    // Builder::new()
-    //     .push_key(&keypair1.public_key().into())
-    //     .push_opcode(OP_CHECKSIGADD)
-    //     .push_key(&keypair2.public_key().into())
-    //     .push_opcode(OP_CHECKSIGADD)
-    //     .push_int(1)
-    //     .push_opcode(OP_NUMEQUALVERIFY)
-    //     .push_opcode(OP_CAT)
-    //     .push_opcode(OP_SHA256)
-    //     .push_slice(&combined_hash)
-    //     .push_opcode(OP_EQUAL)
-    //     .into_script()
-    let (pk, _): (XOnlyPublicKey, secp256k1_zkp::Parity) = XOnlyPublicKey::from_keypair(&keypair1);
+fn battle_script(combined_hash: Vec<u8>, keypair: Keypair) -> elements::Script {
     Builder::new()
-        .push_slice(&pk.serialize())
-        .push_opcode(OP_CHECKSIG)
+        .push_slice(&keypair.x_only_public_key().0.serialize())
+        .push_opcode(OP_CHECKSIGVERIFY)
+        .push_opcode(OP_CAT)
+        .push_opcode(OP_SHA256)
+        .push_slice(&combined_hash)
+        .push_opcode(OP_EQUAL)
         .into_script()
 }
