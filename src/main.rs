@@ -1,9 +1,16 @@
-use elements::hex::ToHex;
+use elements::bitcoin::{secp256k1, transaction, TapSighashType, Witness};
+use elements::encode::deserialize;
+use elements::hex::{FromHex, ToHex};
+use elements::schnorr::{TapTweak, TweakedKeypair};
+use elements::sighash::{Prevouts, SighashCache};
+use elements::{address, bitcoin, BlockHash, Script};
+use leptos::ev::message;
+use reqwasm::http::Request;
 use serde::{Deserialize, Serialize};
 use std::{str::FromStr, vec};
 
-use elements::opcodes::all::OP_EQUAL;
-use elements::secp256k1_zkp::{rand, SecretKey};
+use elements::opcodes::all::{OP_CHECKSIGADD, OP_EQUAL, OP_NUMEQUAL, OP_NUMEQUALVERIFY};
+use elements::secp256k1_zkp::{rand, Message, SecretKey};
 use elements::{
     confidential::{Asset, Value},
     encode::serialize_hex,
@@ -63,6 +70,7 @@ fn main() {
     let p2_hash = sha256::Hash::hash(p2_preimage.as_bytes());
     info!("Player 2 preimage hash: {:?}", p2_hash);
 
+    //oracle server will do this and send to both players
     let combined_hash = sha256::Hash::hash(&[p1_hash, p2_hash].concat());
 
     info!("Combined hash: {:?}", combined_hash);
@@ -72,7 +80,7 @@ fn main() {
         secp256k1_zkp::PublicKey::combine_keys(&[&player_1.public_key(), &player_2.public_key()])
             .expect("Failed to combine keys");
 
-    let script = battle_script(combined_hash.serialize());
+    let script = battle_script(combined_hash.serialize(), player_1, player_2);
 
     let taproot_spend_info: TaprootSpendInfo = TaprootBuilder::new()
         .add_leaf(0, script.clone())
@@ -102,10 +110,12 @@ fn main() {
         &AddressParams::LIQUID_TESTNET,
     );
 
-    //create spend transaction for winner to claim funds
     let address_clone = address.clone();
+    let address_text = format!("game deposit address: {}", address);
+    mount_to_body(|| view! { <p> {address_text} </p> });
+
     spawn_local(async move {
-        let res = reqwasm::http::Request::get(&format!(
+        let res_utxo = Request::get(&format!(
             "https://liquid.network/liquidtestnet/api/address/{}/utxo",
             address_clone
         ))
@@ -116,8 +126,11 @@ fn main() {
         .await
         .unwrap();
 
-        let utxos: Vec<Utxo> = serde_json::from_str(&res).expect("Failed to parse JSON");
-        info!("Parsed UTXOs: {:?}", utxos);
+        let utxos: Vec<Utxo> = serde_json::from_str(&res_utxo).expect("Failed to parse JSON");
+
+        if utxos.is_empty() {
+            return;
+        }
 
         let inputs: Vec<TxIn> = utxos
             .iter()
@@ -126,14 +139,49 @@ fn main() {
                     elements::Txid::from_str(&utxo.txid).expect("Invalid txid format"),
                     utxo.vout,
                 ),
-                sequence: Sequence::default(),
                 ..Default::default()
             })
             .collect();
 
+        info!("Found UTXOs: {:?}", inputs);
+
+        let mut prev_tx = Vec::new();
+
+        for input in inputs.clone() {
+            let url = format!(
+                "https://liquid.network/liquidtestnet/api/tx/{}/hex",
+                input.previous_output.txid
+            );
+            let response = Request::get(&url)
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+
+            let tx: Transaction = deserialize(&Vec::<u8>::from_hex(&response).unwrap()).unwrap();
+            prev_tx.push(tx);
+        }
+
+        info!("Found Transactions: {:?}", prev_tx);
+
+        let mut binding = Vec::new();
+
+        for tx in prev_tx.iter() {
+            for output in &tx.output {
+                binding.push(output.clone());
+            }
+        }
+
+        let prevouts = Prevouts::All(&binding);
+
+        info!("Prevouts: {:?}", prevouts);
+
         let asset_id = AssetId::from_str(&utxos[0].asset).unwrap();
+
         let total_amount = utxos.iter().map(|utxo| utxo.value).sum::<u64>();
-        let fee = 1000;
+        let fee = 100;
 
         let spend = TxOut {
             value: Value::Explicit(total_amount - fee),
@@ -151,6 +199,10 @@ fn main() {
             output: vec![spend, fee],
         };
 
+        let control_block = taproot_spend_info
+            .control_block(&(script.clone(), LeafVersion::default()))
+            .unwrap();
+
         for input in unsigned_tx.input.iter_mut() {
             input
                 .witness
@@ -160,12 +212,26 @@ fn main() {
                 .witness
                 .script_witness
                 .push(p2_hash.serialize().to_vec());
-            input.witness.script_witness.push(script.to_bytes());
 
-            let control_block = taproot_spend_info
-                .control_block(&(script.clone(), LeafVersion::default()))
-                .unwrap();
+            input.witness.script_witness.push(script.to_bytes());
             input.witness.script_witness.push(control_block.serialize());
+
+            // let mut sighasher = SighashCache::new(&mut unsigned_tx);
+            // let sighash = sighasher
+            //     .taproot_script_spend_signature_hash(
+            //         input_index,
+            //         &prevouts,
+
+            //         TapSighashType::Default,
+            //         BlockHash::all_zeros(),
+            //     )
+            //     .expect("failed to construct sighash");
+
+            // // Sign the sighash using the secp256k1 library (exported by rust-bitcoin).
+            // let tweaked: TweakedKeypair = winner.tap_tweak(&secp, None);
+            // let msg = secp256k1::Message::from_digest_slice(sighash.as_ref()).expect("should be cryptographically secure hash")
+            // let signature = secp.sign_schnorr(&msg, &tweaked.to_inner());
+            // input.witness.script_witness.push(signature.serialize().to_vec());
         }
 
         info!("Unsigned Transaction: {:?}", unsigned_tx);
@@ -173,10 +239,9 @@ fn main() {
         let serialized_tx = serialize_hex(&unsigned_tx);
         info!("Hex Encoded Transaction: {}", serialized_tx);
 
-        let address_text = format!("game deposit address: {}", address);
         let txid_text = format!("Withdraw TXID: {}", serialized_tx);
 
-        let res = reqwasm::http::Request::post("https://liquid.network/liquidtestnet/api/tx")
+        let res = Request::post("https://liquid.network/liquidtestnet/api/tx")
             .body(serialized_tx)
             .send()
             .await
@@ -187,17 +252,21 @@ fn main() {
 
         info!("TXID: {:?}", res);
 
-        mount_to_body(|| view! { <p> {address_text} </p><p> {txid_text} </p> });
+        mount_to_body(|| view! { <p> {txid_text} </p> });
     });
 }
 
-fn battle_script(combined_hash: Vec<u8>) -> elements::Script {
+fn battle_script(combined_hash: Vec<u8>, keypair1: Keypair, keypair2: Keypair) -> elements::Script {
     Builder::new()
+        .push_key(&keypair1.public_key().into())
+        .push_opcode(OP_CHECKSIGADD)
+        .push_key(&keypair2.public_key().into())
+        .push_opcode(OP_CHECKSIGADD)
+        .push_int(1)
+        .push_opcode(OP_NUMEQUALVERIFY)
         .push_opcode(OP_CAT)
         .push_opcode(OP_SHA256)
         .push_slice(&combined_hash)
         .push_opcode(OP_EQUAL)
         .into_script()
-
-    //todo: add hashlock stuff so only the two players are able to spend if they win and timelock for if the game timesout
 }
